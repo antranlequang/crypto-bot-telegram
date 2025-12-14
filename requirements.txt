@@ -1,0 +1,29 @@
+# Telegram Bot
+python-telegram-bot>=20.0
+
+# Data Processing
+pandas>=1.5.0
+numpy>=1.23.0
+
+# Machine Learning
+stable-baselines3>=2.0.0
+xgboost>=2.0.0
+
+# Data Visualization
+plotly>=5.0.0
+
+# API Requests
+requests>=2.28.0
+
+# Natural Language Processing
+textblob>=0.17.0
+
+# RSS Feeds (optional)
+feedparser>=6.0.0
+
+# Environment Variables
+python-dotenv>=1.0.0
+
+# OpenAI (for RAG)
+openai>=1.0.0
+
