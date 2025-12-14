@@ -13,6 +13,7 @@ import requests
 import numpy as np
 import pandas as pd
 import plotly.graph_objects as go
+from keep_alive import keep_alive
 
 from telegram import (
     Update,
@@ -1929,6 +1930,8 @@ def main():
     if not TELEGRAM_BOT_TOKEN:
         raise RuntimeError("Bạn cần set TELEGRAM_BOT_TOKEN trong biến môi trường.")
 
+    keep_alive()
+    
     app = ApplicationBuilder().token(TELEGRAM_BOT_TOKEN).build()
 
     # Set up bot commands menu (shows when user presses "/")
