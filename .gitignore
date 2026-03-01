@@ -35,6 +35,8 @@ wheels/
 
 # Charts
 charts/*.html
+data_exports/*.csv
+
 
 # Models (if large)
 # models/*.zip
