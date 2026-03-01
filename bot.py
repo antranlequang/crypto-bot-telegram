@@ -215,6 +215,7 @@ NEWS_FETCH_LIMIT = 10
 MAX_NEWS_PER_SENTIMENT = 5
 ANALYSIS_LOOKBACK_YEARS = 5
 USE_DRL = True
+ENABLE_DRL_AUTO_TRAIN = False
 DEFAULT_NEWS_DAYS = 3  # Default number of days to fetch news data
 CACHE_TTL_SECONDS = 15 * 60
 _FEATURE_TABLE_CACHE: dict[tuple, dict] = {}
@@ -348,10 +349,11 @@ def run_drl_script() -> bool:
 
     Returns True if execution succeeded, False otherwise.
     """
-    script_path = os.path.join(os.path.dirname(__file__), "drl_model.py")
-    if not os.path.exists(script_path):
-        logger.error("DRL script not found at %s", script_path)
+    if not ENABLE_DRL_AUTO_TRAIN:
+        logger.info("Auto DRL training is disabled (ENABLE_DRL_AUTO_TRAIN=False). Skipping run_drl_script().")
         return False
+
+    script_path = os.path.join(os.path.dirname(__file__), "drl_model.py")
     try:
         cmd = [
             sys.executable,
@@ -389,23 +391,27 @@ def get_dated_model_path(dt: datetime | None = None) -> str:
 def select_drl_model_path() -> str:
     """Choose which DRL model file to load for analysis.
 
-    Prefer today's dated file; fall back to the generic path. If neither exist,
-    log and trigger an immediate update to generate one.
+    Auto retraining on the server is disabled by default.
+    Load priority:
+      1) today's dated file if present,
+      2) otherwise the default PPO_BTC_MODEL_PATH.
+
+    If neither file exists, keep DRL disabled until a model zip is uploaded.
     """
     today_path = get_dated_model_path()
     if os.path.exists(today_path):
         return today_path
 
-    logger.warning("No DRL model found for today (%s).", today_path)
-    # fall back to base path
     if os.path.exists(PPO_BTC_MODEL_PATH):
-        logger.info("Using fallback model %s", PPO_BTC_MODEL_PATH)
+        logger.info("Using DRL model: %s", PPO_BTC_MODEL_PATH)
         return PPO_BTC_MODEL_PATH
 
-    logger.warning("Fallback model %s missing as well; running daily update now.", PPO_BTC_MODEL_PATH)
-    daily_btc_update()
-    if os.path.exists(today_path):
-        return today_path
+    logger.warning(
+        "No DRL model found. Expected %s (or %s). "
+        "DRL signal will be skipped until you upload a trained model zip.",
+        PPO_BTC_MODEL_PATH,
+        today_path,
+    )
     return PPO_BTC_MODEL_PATH
 
 
@@ -417,7 +423,9 @@ def daily_btc_update() -> None:
     resulting zip is also copied to a date‑stamped filename for that UTC day.
     """
     logger.info("🔄 starting scheduled BTC update and DRL training")
-    
+    if not ENABLE_DRL_AUTO_TRAIN:
+        logger.info("Auto DRL training is disabled (ENABLE_DRL_AUTO_TRAIN=False). Skipping daily_btc_update().")
+        return
     # Send monitoring log for DRL training start
     try:
         import asyncio
@@ -3140,6 +3148,21 @@ def build_rag_context(analysis_context: dict, conversation_history: list[dict] |
         "data_timestamp": analysis_context.get("data_timestamp"),
     }
 
+# ===== DRL FEATURE CONFIG (must match training) =====
+DRL_FEATURE_COLS = [
+    "close","open","high","low","vol",
+    "rsi_14","macd_line_6_20","macd_signal_6_20",
+    "roc_12","atr_14","std_dev_20","obv",
+]
+
+def build_drl_input(df_feat: pd.DataFrame) -> pd.DataFrame:
+    df = df_feat.copy()
+    df.columns = [c.lower() for c in df.columns]
+    missing = [c for c in DRL_FEATURE_COLS if c not in df.columns]
+    if missing:
+        raise ValueError(f"DRL input missing columns: {missing}")
+    return df[DRL_FEATURE_COLS]
+
 # ---------- DRL Policy Engine (BTC only) ----------
 class DRLPolicyEngine:
     """
@@ -3177,20 +3200,20 @@ class DRLPolicyEngine:
     def make_state_from_df(self, df_feat: pd.DataFrame) -> np.ndarray:
         """
         Lấy window cuối cùng để feed vào PPO.
-        Ở đây mình giả sử bạn đã build state là:
-        [flatten(features_window), cash_ratio, pos_ratio]
-        nhưng trong chatbot này ta chỉ dùng để đánh giá market regime,
-        nên có thể cho fixed cash_ratio=1, pos_ratio=0.
+        Đảm bảo feature set khớp với lúc training.
         """
-        window = df_feat.tail(self.window_size)
-        window = window.select_dtypes(include=[np.number])
-        if window.empty:
-            raise ValueError("DRL input has no numeric features after filtering")
-        feats = window.values.flatten()
-        cash_ratio = 1.0
-        pos_ratio = 0.0
-        state = np.concatenate([feats, [cash_ratio, pos_ratio]]).astype(np.float32)
-        return state
+        # Ensure feature set matches training exactly
+        df_drl = build_drl_input(df_feat)
+
+        window = df_drl.tail(self.window_size)
+        if len(window) < self.window_size:
+            raise ValueError("Not enough rows for DRL window")
+
+        feats = window.values.astype(np.float32).flatten()
+
+        # IMPORTANT: Training env does NOT append extra features.
+        # So we return ONLY flattened feature window.
+        return feats
 
     def get_policy_signal(self, df_feat: pd.DataFrame) -> dict:
         """
@@ -3783,28 +3806,9 @@ Câu hỏi của người dùng:
         ml_signal = context.get("ml_signal")
 
         lines = [
-            f"Phân tích nhanh cho {symbol}:",
-            f"- Giá hiện tại: {price}",
-            f"- RSI14: {fmt(indicators.get('rsi_14'))}, MACD Hist: {fmt(indicators.get('macd_hist'))}, ATR14: {fmt(indicators.get('atr_14'))}",
-            f"- Điểm kỹ thuật: {fmt(technical.get('score'))} ({technical.get('trend_note') or 'Không có ghi chú'})",
-            f"- Sentiment: {sentiment.get('label', 'Không xác định')} | Tin tích cực/trung lập/tiêu cực: {news_counts.get('positive',0)}/{news_counts.get('neutral',0)}/{news_counts.get('negative',0)}",
-            f"- Tín hiệu mô hình: {model_signal}",
+            f"⚠️ Tính năng hỏi đáp bằng AI đang được phát triển, vui lòng sử dụng các lệnh có sẵn.",
         ]
-
-        if ml_signal:
-            lines.append(
-                f"- ML: {ml_signal.get('label','UNKNOWN')} (Up {fmt_pct(ml_signal.get('proba_up'))} / Down {fmt_pct(ml_signal.get('proba_down'))})"
-            )
-
-        rec_action = recommendation.get("action") or recommendation.get("recommendation") or "HOLD"
-        rec_score = fmt(recommendation.get("score_percent"), "%")
-        rec_conf = fmt(recommendation.get("confidence_percent"), "%")
-        lines.append(f"- Khuyến nghị tổng hợp: {rec_action} (điểm {rec_score}, độ tin cậy {rec_conf})")
-
-        lines.append("⚠️ Ghi chú: Đây là tóm tắt tự động khi AI không phản hồi.")
-        if note:
-            lines.append(f"Lý do kỹ thuật: {note}")
-
+        
         return "\n".join(lines)
 
 
@@ -4142,6 +4146,7 @@ else:
 # Initialize DRL engine with error handling
 drl_engine = None
 if USE_DRL:
+    ENABLE_DRL_AUTO_TRAIN = False
     model_path = select_drl_model_path()
     if os.path.exists(model_path):
         try:
@@ -4214,18 +4219,22 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await send_to_monitor_bot(monitor_msg)
     
     text = (
-        f"📖 <b>HƯỚNG DẪN SỬ DỤNG</b>\n\n"
+        f"📖 HƯỚNG DẪN SỬ DỤNG\n\n"
+        
         f"**1. Phân tích coin:**\n"
-        f"• Dùng lệnh: `/analyze BTC`\n"
+        f"• Dùng lệnh: `/analyze BTC`\n\n"
+        
         "**2. Hỏi về phân tích:**\n"
         "Sau khi có kết quả phân tích, bạn có thể hỏi:\n"
-        "• 'Lý do khuyến nghị này?'\n"
-        "• 'Tại sao nên mua/bán?'\n"
-        "• 'Phân tích chi tiết hơn'\n\n"
+        "- 'Lý do khuyến nghị này?'\n"
+        "- 'Tại sao nên mua/bán?'\n"
+        "- 'Phân tích chi tiết hơn.'\n\n"
+        
         "**3. Các tính năng:**\n"
-        "• 📈 Xem biểu đồ và chỉ báo kỹ thuật\n"
-        "• 📰 Đọc tin tức mới nhất\n"
-        "• 💡 Giải thích chi tiết khuyến nghị\n\n"
+        "- Xem biểu đồ và chỉ báo kỹ thuật.\n"
+        "- Đọc tin tức mới nhất.\n"
+        "- Nêu luận điểm đầu tư.\n\n"
+        
         "**4. Làm mới chat:**\n"
         "Dùng `/renew` để xóa lịch sử và bắt đầu lại\n\n"
         f"{get_commands_menu()}"
@@ -4245,21 +4254,24 @@ async def about_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "🤖 **GIỚI THIỆU VỀ BOT**\n\n"
         "**Crypto Analysis Bot** là Chatbot AI dùng để phân tích và đưa ra kết quả khuyến nghị đầu tư của các dòng tiền điện tử:\n\n"
 
-        "**📊 Hệ thống sử dụng 3 mô hình chính:**\n"
+        "**🤖 Hệ thống sử dụng 3 mô hình chính:**\n"
         "- Mô hình dự báo bằng máy học (XGBoost).\n"
-        "• Mô hình học tăng cường sâu tượng trưng cho xu hướng thị trường (lấy đồng tiền Bitcoin làm chuẩn).\n"
-        "• Mô hình tổng hợp điểm cảm xúc từ các tin tức mới nhất.\n\n"
+        "- Mô hình học tăng cường sâu tượng trưng cho xu hướng thị trường (lấy đồng tiền Bitcoin làm chuẩn).\n"
+        "- Mô hình tổng hợp điểm cảm xúc từ các tin tức mới nhất.\n\n"
     
-        "** 🟢 Khuyến nghị cuối cùng được đưa ra bằng cách tổng hợp kết quả của 3 mô hình trên.**\n\n"
-        
-        "**💡 Đưa ra chi tiết luận điểm đầu tư bằng AI.**\n\n"
+        "**💡 Khuyến nghị cuối cùng được đưa ra bằng cách tổng hợp kết quả của 3 mô hình trên. Đồng thời đưa ra chi tiết luận điểm đầu tư bằng AI.**\n\n"
+
+        "**📞 Hỗ trợ:** Dùng `/help` để xem hướng dẫn chi tiết.\n\n"
         
         "**⚠️ Lưu ý:**\n"
-        "- Đây là Chatbot được xây dựng nhằm mục đích nghiên cứu học thuật."
+        "- Đây là Chatbot được xây dựng nhằm mục đích nghiên cứu học thuật.\n"
         "- Tất cả khuyến nghị chỉ mang tính tham khảo. Quyết định đầu tư cuối cùng thuộc về bạn.\n\n"
         
-        "**📞 Hỗ trợ:**\n"
-        "Dùng `/help` để xem hướng dẫn chi tiết."
+        " **🍀 KẾT LỜI**:\n"
+        "- Chatbot này được xây dựng phục vụ cho Đồ án tốt nghiệp của sinh viên K224141649 - Trần Lê Quang An.\n"
+        "- Em xin chân thành cảm ơn ThS Ngô Phú Thanh đã hỗ trợ em rất nhiều trong suốt quá trình thực hiện đề tài, dù gặp nhiều khó khăn trong quá xây dựng, giới hạn về công nghệ, tài chính, kiến thức nên Chatbot vẫn còn nhiều hạn chế.\n"
+        "- Em cũng xin cảm ơn Quý Thầy/Cô hội đồng, những người đang chấm bài, sử dụng Chatbot của em, dù không phải là tốt nhất nhưng hi vọng Thầy/Cô sẽ có những trải nghiệm thú vị.\n"
+        "- Em rất mong nhận được những góp ý, phản hồi từ Thầy/Cô để có thể cải thiện Đề tài hơn nữa trong tương lai. Xin cảm ơn Thầy/Cô rất nhiều ạ!"
     )
     await update.message.reply_text(text, parse_mode="Markdown")
 
@@ -4377,7 +4389,7 @@ async def analyze_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # Send monitoring log
     user_id = message.from_user.id if message else "unknown"
     username = message.from_user.username if message and message.from_user else "unknown"
-    monitor_msg = f"📊 \n<b>Analysis Request:</b>\n- User: @{username} (ID: {user_id})\n- Symbol: <b>{symbol}</b>"
+    monitor_msg = f"📊 <b>Analysis Request:</b>\n- User: @{username} (ID: {user_id})\n- Symbol: <b>{symbol}</b>"
     await send_to_monitor_bot(monitor_msg)
     
     await run_full_analysis(update, context, symbol)
@@ -5173,15 +5185,16 @@ def _build_application() -> Application:
     app.add_handler(CommandHandler("data", data_command))
     app.add_handler(CallbackQueryHandler(handle_news_callback, pattern=r"^news:"))
 
-    # schedule a daily BTC data refresh and DRL training at 00:30 UTC (07:30 Vietnam time)
-    try:
-        scheduler = AsyncIOScheduler()
-        trigger = CronTrigger(hour=0, minute=30, timezone=pytz.UTC)
-        scheduler.add_job(daily_btc_update, trigger=trigger)
-        scheduler.start()
-        logger.info("Scheduler started: daily BTC update at 00:30 UTC")
-    except Exception as exc:  # noqa: BLE001
-        logger.warning("Failed to start scheduler: %s", exc)
+    # NOTE: Daily DRL retraining disabled. Train locally and upload model to server.
+    # If you want to re-enable, uncomment the scheduler block below.
+    # try:
+    #     scheduler = AsyncIOScheduler()
+    #     trigger = CronTrigger(hour=0, minute=30, timezone=pytz.UTC)
+    #     scheduler.add_job(daily_btc_update, trigger=trigger)
+    #     scheduler.start()
+    #     logger.info("Scheduler started: daily BTC update at 00:30 UTC")
+    # except Exception as exc:  # noqa: BLE001
+    #     logger.warning("Failed to start scheduler: %s", exc)
     app.add_handler(CallbackQueryHandler(handle_thesis_callback, pattern=r"^thesis:"))
     app.add_handler(CallbackQueryHandler(handle_chart_callback, pattern=r"^chart:"))
     app.add_error_handler(error_handler)
