@@ -258,7 +258,7 @@ def prepare_data(data_raw):
     return data_final, train_df, test_df
 
 
-def train_model(train_df, seed=12, timesteps=500000):
+def train_model(train_df, seed=12, timesteps=300000):
     """
     Train PPO agent on training data
     
