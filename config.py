@@ -61,7 +61,7 @@ XGB_DIRECTION_MODEL_WITH_ONCHAIN_PATH = "models/xgb_direction_with_onchain.bin"
 XGB_DIRECTION_MODEL_NO_ONCHAIN_PATH = "models/xgb_direction_no_onchain.bin"
 
 # ===== OTHER SETTINGS ======
-WINDOW_SIZE = 365  # số ngày đưa vào state DRL
+WINDOW_SIZE = 20  # số ngày đưa vào state DRL
 DATA_LOOKBACK_DAYS = 365 * 5  # dùng dữ liệu tối đa 5 năm để huấn luyện mô hình
 DISPLAY_NEWS_DAYS = 3  # số ngày tin tức hiển thị trong phần phản hồi
 NEWS_LOOKBACK_DAYS = 3  # số ngày tin tức để phân tích sentiment

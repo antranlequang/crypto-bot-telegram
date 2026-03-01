@@ -982,7 +982,11 @@ class AlphaVantageSentimentDataProvider:
 
                     # Rate limit
                     if "Note" in data:
-                        logger.warning("Rate limit hit. Sleeping 30s.")
+                        logger.warning(
+                            "Alpha Vantage rate limit hit for %s. Detail=%s. Sleeping 30s.",
+                            symbol,
+                            data.get("Note")
+                        )
                         time.sleep(30)
                         continue
                     if "Error Message" in data or "Information" in data:
@@ -1168,7 +1172,11 @@ class AlphaVantageSentimentDataProvider:
 
                 # Rate limit
                 if "Note" in data:
-                    logger.warning("Rate limit hit. Sleeping 30s.")
+                    logger.warning(
+                        "Alpha Vantage rate limit hit for %s. Detail=%s. Sleeping 30s.",
+                        symbol,
+                        data.get("Note")
+                    )
                     time.sleep(30)
                     continue
                 if "Error Message" in data or "Information" in data:
