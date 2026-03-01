@@ -19,20 +19,24 @@ def _clean_env(value: str | None) -> str | None:
 
 
 TELEGRAM_BOT_TOKEN = _clean_env(os.getenv("TELEGRAM_BOT_TOKEN"))
+SECONDARY_BOT_TOKEN = _clean_env(os.getenv("SECONDARY_BOT_TOKEN"))  # Bot for monitoring/logging
+MONITOR_CHAT_ID = _clean_env(os.getenv("MONITOR_CHAT_ID"))  # Chat ID to send logs to
 
 # ===== CRYPTO DATA API =====
-# Ví dụ CoinMarketCap
+# CoinMarketCap
 CMC_API_KEY = _clean_env(os.getenv("CMC_API_KEY"))
 CMC_BASE_URL = "https://pro-api.coinmarketcap.com/v1"
 
-# ===== NEWS / SENTIMENT API =====
-# Ví dụ CryptoPanic
-CRYPTOPANIC_API_KEY = _clean_env(os.getenv("CRYPTOPANIC_API_KEY"))
-CRYPTOPANIC_BASE_URL = "https://cryptopanic.com/api/v1/posts/"
+# CoinDesk (for OHLCV and on-chain data)
+COINDESK_API_KEY = _clean_env(os.getenv("COINDESK_API_KEY"))
+COINDESK_BASE_URL = "https://api.coindesk.com/v1"
 
-# (hoặc CryptoNews-API)
-CRYPTONEWS_API_KEY = _clean_env(os.getenv("CRYPTONEWS_API_KEY"))
-CRYPTO_NEWS_BASE_URL = "https://cryptonews-api.com/api/v1"
+# ===== NEWS / SENTIMENT API =====
+COINMARKETCAL_API_KEY = _clean_env(os.getenv("COINMARKETCAL_API_KEY"))
+TWITTER_BEARER_TOKEN = _clean_env(os.getenv("TWITTER_BEARER_TOKEN"))
+REDDIT_USER_AGENT = _clean_env(os.getenv("REDDIT_USER_AGENT")) or "crypto-telegram-bot/1.0"
+ALPHA_VANTAGE_API_KEY = _clean_env(os.getenv("ALPHA_VANTAGE_API_KEY"))  # For sentiment API
+SENTIMENT_PROVIDER = _clean_env(os.getenv("SENTIMENT_PROVIDER")) or "alpha"  # alpha | gnews | off
 
 
 # ===== LLM / RAG (Gemini via Vertex AI) =====
@@ -40,21 +44,31 @@ GEMINI_API_KEY = _clean_env(os.getenv("GEMINI_API_KEY"))
 GOOGLE_PROJECT_ID = _clean_env(os.getenv("GOOGLE_PROJECT_ID"))
 GOOGLE_LOCATION = _clean_env(os.getenv("GOOGLE_LOCATION")) or "us-central1"
 
+# ===== Macro Data API (fallback) =====
+FRED_API_KEY = _clean_env(os.getenv("FRED_API_KEY"))  # tùy chọn, dùng khi yfinance lỗi
+
 # ===== Reply Formatting =====
 EXPLANATION_REPLY_TEMPLATE = (
     _clean_env(os.getenv("EXPLANATION_REPLY_TEMPLATE"))
-    or "💡 Giải thích khuyến nghị cho {symbol}:\n\n{answer}"
+    or "LUẬN ĐIỂM ĐẦU TƯ - {symbol}\n💡 Giải thích khuyến nghị:\n{answer}"
 )
 EXPLANATION_PARSE_MODE = (_clean_env(os.getenv("EXPLANATION_PARSE_MODE")) or "PLAIN").upper()
 
 # ===== MODEL PATHS =====
 PPO_BTC_MODEL_PATH = "models/drl_ppo_btc.zip"
 XGB_DIRECTION_MODEL_PATH = "models/xgb_direction.bin"
+XGB_DIRECTION_MODEL_WITH_ONCHAIN_PATH = "models/xgb_direction_with_onchain.bin"
+XGB_DIRECTION_MODEL_NO_ONCHAIN_PATH = "models/xgb_direction_no_onchain.bin"
 
-# ===== OTHER SETTINGS =====
-WINDOW_SIZE = 60   # số ngày đưa vào state DRL
-DATA_LOOKBACK_DAYS = 365 * 3  # dữ liệu 3 năm nếu cần
+# ===== OTHER SETTINGS ======
+WINDOW_SIZE = 365  # số ngày đưa vào state DRL
+DATA_LOOKBACK_DAYS = 365 * 5  # dùng dữ liệu tối đa 5 năm để huấn luyện mô hình
+DISPLAY_NEWS_DAYS = 3  # số ngày tin tức hiển thị trong phần phản hồi
+NEWS_LOOKBACK_DAYS = 3  # số ngày tin tức để phân tích sentiment
 CHART_FOLDER = "charts"
+DATA_EXPORT_FOLDER = "data_exports"  # CSV export folder for data verification
+USE_MACRO_DATA = (_clean_env(os.getenv("USE_MACRO_DATA")) or "0").lower() not in {"0", "false", "no"}
+USE_RISK_SCORE = (_clean_env(os.getenv("USE_RISK_SCORE")) or "0").lower() not in {"0", "false", "no"}
 
 # ===== RAG PROMPT CONFIGURATION =====
 RAG_SYSTEM_PROMPT = """
@@ -67,14 +81,16 @@ QUY TẮC QUAN TRỌNG:
 3. Giải thích rõ ràng, logic, dựa trên dữ liệu thực tế.
 4. Tránh ngôn ngữ chắc chắn tuyệt đối - luôn nhắc nhở về rủi ro.
 5. Nếu dữ liệu mâu thuẫn, hãy phân tích sự khác biệt và đưa ra khuyến nghị thận trọng.
-6. Phải nêu rõ dữ kiện nào đến từ mô hình DRL, ML, chỉ báo kỹ thuật, hay sentiment.
+6. Chỉ mô tả theo nhóm: thị trường, dự báo mô hình, tin tức.
 7. Không đưa lời khuyên đầu tư mang tính bắt buộc - chỉ phân tích và gợi ý.
+8. Không đề cập dữ liệu on-chain trong phần giải thích.
+9. Tập trung vào vĩ mô, chỉ báo kỹ thuật, tin tức thị trường và kết quả mô hình.
 
 PHONG CÁCH TRẢ LỜI:
-- Chuyên nghiệp nhưng dễ hiểu
-- Có cấu trúc rõ ràng (đánh số hoặc bullet points)
-- Kết hợp phân tích kỹ thuật với sentiment và mô hình AI
-- Luôn kết thúc bằng lưu ý về rủi ro
+- Trang trọng, ngắn gọn, mỗi ý một dòng
+- Không nhắc tên cụ thể mô hình hay trọng số
+- Nhắc chung theo nhóm: thị trường, dự báo mô hình, tin tức
+- Không cần lời chào, đi thẳng vào nội dung
 """
 
 # Keywords để nhận diện câu hỏi về phân tích
