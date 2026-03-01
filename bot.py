@@ -218,6 +218,10 @@ USE_DRL = True
 DEFAULT_NEWS_DAYS = 3  # Default number of days to fetch news data
 CACHE_TTL_SECONDS = 15 * 60
 _FEATURE_TABLE_CACHE: dict[tuple, dict] = {}
+_REALTIME_PRICE_CACHE: dict[str, dict] = {}
+_SENTIMENT_NEWS_CACHE: dict[tuple, dict] = {}
+REALTIME_PRICE_TTL_SECONDS = 5 * 60
+SENTIMENT_NEWS_TTL_SECONDS = 30 * 60
 
 
 # ---------- Monitoring/Logging to Secondary Bot ----------
@@ -523,6 +527,13 @@ def get_analysis_lookback_days(years: int = ANALYSIS_LOOKBACK_YEARS) -> int:
 
 
 def get_realtime_price_coingecko(symbol: str, vs_currency: str = "USD") -> float | None:
+    cache_key = f"{symbol.upper()}:{vs_currency.upper()}"
+    cached = _REALTIME_PRICE_CACHE.get(cache_key)
+    if cached:
+        cached_at = cached.get("fetched_at")
+        if cached_at and datetime.now(timezone.utc) - cached_at < timedelta(seconds=REALTIME_PRICE_TTL_SECONDS):
+            return cached.get("price")
+
     coin_map = {
         "BTC": "bitcoin",
         "ETH": "ethereum",
@@ -581,7 +592,12 @@ def get_realtime_price_coingecko(symbol: str, vs_currency: str = "USD") -> float
         response.raise_for_status()
         data = response.json()
         price = data.get(coin_id, {}).get(vs_currency.lower())
-        return float(price) if price is not None else None
+        price_val = float(price) if price is not None else None
+        _REALTIME_PRICE_CACHE[cache_key] = {
+            "fetched_at": datetime.now(timezone.utc),
+            "price": price_val,
+        }
+        return price_val
     except Exception as exc:  # noqa: BLE001
         logger.error("Realtime price fetch failed for %s: %s", symbol, exc)
         return None
@@ -4746,7 +4762,24 @@ async def run_full_analysis(update: Update, context: ContextTypes.DEFAULT_TYPE, 
     try:
         # Fetch news with sentiment from the configured provider (use NEWS_LOOKBACK_DAYS)
         if sentiment_provider and sentiment_provider.available:
-            fetched_news = sentiment_provider.fetch_news_with_sentiment(symbol, days=NEWS_LOOKBACK_DAYS)
+            news_cache_key = (symbol.upper(), NEWS_LOOKBACK_DAYS, sentiment_provider.provider_name)
+            cached_news = _SENTIMENT_NEWS_CACHE.get(news_cache_key)
+            if cached_news:
+                cached_at = cached_news.get("fetched_at")
+                if cached_at and datetime.now(timezone.utc) - cached_at < timedelta(seconds=SENTIMENT_NEWS_TTL_SECONDS):
+                    fetched_news = cached_news.get("items") or []
+                else:
+                    fetched_news = sentiment_provider.fetch_news_with_sentiment(symbol, days=NEWS_LOOKBACK_DAYS)
+                    _SENTIMENT_NEWS_CACHE[news_cache_key] = {
+                        "fetched_at": datetime.now(timezone.utc),
+                        "items": fetched_news,
+                    }
+            else:
+                fetched_news = sentiment_provider.fetch_news_with_sentiment(symbol, days=NEWS_LOOKBACK_DAYS)
+                _SENTIMENT_NEWS_CACHE[news_cache_key] = {
+                    "fetched_at": datetime.now(timezone.utc),
+                    "items": fetched_news,
+                }
             if fetched_news:
                 latest_day = None
                 for item in fetched_news:
