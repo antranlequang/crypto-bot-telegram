@@ -4202,9 +4202,12 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     monitor_msg = f"🚀 <b>Bot Started:</b>\n- User: @{username} (ID: {user_id})"
     await send_to_monitor_bot(monitor_msg)
     
+    # Mark greeting as shown
+    context.user_data["greeting_shown"] = True
+    
     text = (
-        "👋 **Chào mừng đến với Crypto Analysis Bot!**\n\n"
-        "Tôi là AI Chatbot chuyên phân tích giá cryptocurrency.\n\n"
+        "✨ **Chào mừng đến với Crypto Analysis Bot!** ✨\n\n"
+        "Đây là Chatbot AI chuyên phân tích đưa ra khuyến nghị tiền điện tử.\n\n"
         f"{get_commands_menu()}"
     )
     await update.message.reply_text(text, parse_mode="Markdown")
@@ -4448,12 +4451,6 @@ async def data_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         with open(bundle_path, "rb") as f:
             await message.reply_document(
                 document=InputFile(f, filename=bundle_filename),
-                caption=(
-                    f"📦 Dữ liệu của đồng {symbol}:\n"
-                    f"- Bao gồm: OHLCV, On-chain, Macro, Sentiment.\n"
-                    f"- Kích thước: {file_size_mb:.2f} MB."
-                    f"Nhấn đề tải xuống." 
-                )
             )
         logger.info(f"Data bundle sent successfully to user")
     except Exception as exc:
@@ -4463,9 +4460,31 @@ async def data_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
 
 
+async def show_greeting_if_needed(message, context: ContextTypes.DEFAULT_TYPE) -> bool:
+    """
+    Show greeting message if user is seeing it for the first time.
+    Returns True if greeting was shown, False otherwise.
+    """
+    if context.user_data.get("greeting_shown"):
+        return False
+    
+    # Mark greeting as shown
+    context.user_data["greeting_shown"] = True
+    
+    # Send the same greeting as /start command
+    text = (
+        "✨ **Chào mừng đến với Crypto Analysis Bot!** ✨\n\n"
+        "Đây là Chatbot AI chuyên phân tích đưa ra khuyến nghị tiền điện tử.\n\n"
+        f"{get_commands_menu()}"
+    )
+    await message.reply_text(text, parse_mode="Markdown")
+    return True
+
+
 async def analyze_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """
     Sau khi chạy /analyze, mọi tin nhắn tiếp theo đều được dùng để hỏi đáp dựa trên dữ liệu đã phân tích.
+    For new users on first message, shows greeting automatically.
     """
     message = update.message
     await refresh_history_if_needed(message, context)
@@ -4480,7 +4499,12 @@ async def analyze_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         monitor_msg = f"💬 <b>Follow-up Question:</b>\n- User: @{username} (ID: {user_id})\n- Symbol: <b>{last_symbol}</b>\n📝 Query: <code>{raw_text[:100]}</code>"
         await send_to_monitor_bot(monitor_msg)
 
+    # Show greeting on first message if not done yet
     if not last_symbol:
+        greeting_shown = await show_greeting_if_needed(message, context)
+        if greeting_shown:
+            return
+        
         response_text = (
             "Tôi chưa có dữ liệu để trả lời.\n"
             "Vui lòng bắt đầu bằng lệnh /analyze <mã_coin> (ví dụ: /analyze BTC)."
@@ -4622,11 +4646,6 @@ async def handle_chart_callback(update: Update, context: ContextTypes.DEFAULT_TY
         with open(chart_path, "rb") as f:
             await query.message.reply_document(
                 document=InputFile(f, filename=os.path.basename(chart_path)),
-                caption=(
-                    f"📦 Biểu đồ giá {symbol} trong 1 năm gần nhất.\n"
-                    f"Kích thước: {os.path.getsize(chart_path) / (1024 * 1024):.2f} MB.\n"
-                    f"Nhấn để tải xuống."
-                )
             )
     except Exception as exc:  # noqa: BLE001
         logger.error("Gửi chart thất bại: %s", exc)
@@ -4675,7 +4694,7 @@ async def handle_rag_question(update: Update, context: ContextTypes.DEFAULT_TYPE
         
         # Xóa message "đang suy nghĩ" và gửi câu trả lời
         await thinking_msg.delete()
-        reply_text = f"{answer}"
+        reply_text = f"{answer}\n\n⚠️ Lưu ý: Lưu ý: Đây chỉ là khuyến nghị tham khảo. Quyết định cuối cùng thuộc về nhà đầu tư."
         await message.reply_text(reply_text, parse_mode="Markdown")
         log_bot_message(context.user_data, reply_text, symbol)
     except Exception as e:
@@ -4767,7 +4786,7 @@ async def run_full_analysis(update: Update, context: ContextTypes.DEFAULT_TYPE, 
         "label": "NEUTRAL",
         "avg_polarity": 0.0,
         "counts": {"positive": 0, "neutral": 0, "negative": 0}
-    }
+    } 
     latest_day_counts = {"positive": 0, "neutral": 0, "negative": 0}
     latest_day_str = None
 
